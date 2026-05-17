@@ -1,0 +1,120 @@
+# ------------------------------
+# Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Build / Packaging
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ------------------------------
+# Virtual Environment
+# ------------------------------
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ------------------------------
+# Environment Variables
+# ------------------------------
+.env
+.env.local
+.env.*.local
+
+# ------------------------------
+# Database / ChromaDB
+# ------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# Chroma vector data
+backend/storage/chromadb/
+
+# ------------------------------
+# Streamlit
+# ------------------------------
+.streamlit/
+.streamlit/*.json
+
+# ------------------------------
+# Logs
+# ------------------------------
+*.log
+logs/
+
+# ------------------------------
+# Testing
+# ------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ------------------------------
+# IDE / Editors
+# ------------------------------
+.vscode/
+.idea/
+.project
+.pydevproject
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Optional:
+# Keep VSCode settings if shared
+# !.vscode/settings.json
+
+# ------------------------------
+# Temporary / Backup
+# ------------------------------
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*~
+
+# ------------------------------
+# Node (if used later)
+# ------------------------------
+node_modules/
+npm-debug.log
+
+# ------------------------------
+# OS Files
+# ------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------
+# Profiling
+# ------------------------------
+.profile
+*.prof
