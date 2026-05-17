@@ -375,13 +375,16 @@ DEBUG=True streamlit run frontend/app.py
 # With logging
 python -u frontend/app.py 2>&1
 ```
+## 📝 Roadmap
 
-## 📝 Future Enhancements
+### 🔄 Currently In Progress
+- [ ] Proactive Reminders — auto-detect deadlines and intentions from stored memories
+- [ ] Streamlit UI — Dashboard, Add Memory, Ask Memory, Analytics, Settings pages
 
-- [ ] Web interface with API
+### 📌 Planned
+- [ ] Web interface with REST API
 - [ ] Mobile app support
 - [ ] Voice input/output
-- [ ] Advanced NLP for intent detection
 - [ ] Scheduled automatic backups
 - [ ] Memory export/import
 - [ ] Multi-user support
@@ -389,13 +392,24 @@ python -u frontend/app.py 2>&1
 - [ ] Custom embedding models
 - [ ] Performance metrics dashboard
 
+### ✅ Completed
+- [x] ChromaDB vector store integration
+- [x] Ollama LLM service
+- [x] RAG pipeline
+- [x] AES-256 encryption & access control
+- [x] Memory decay scoring
+- [x] Semantic search
+- [x] Automatic tagging
+- [x] Backend API layer
+
+
 ## 🤝 Contributing
 
-Contributions welcome! Areas for improvement:
-1. Performance optimization
-2. Additional Ollama model support
-3. Enhanced UI/UX
-4. Additional security features
+Contributions welcome! Priority areas right now:
+1. **Proactive Reminders** — deadline/intention detection logic
+2. **Streamlit UI** — clean, intuitive pages for all features
+3. Performance optimization
+4. Additional Ollama model support
 5. Documentation improvements
 
 ## 📄 License
@@ -419,11 +433,11 @@ For issues and questions:
 
 ## 🎯 Key Innovations
 
-✅ **RAG-Based Personal Memory** - Your own data, not generic AI
-✅ **Cognitive Memory Decay** - Mimics human forgetting
-✅ **Privacy-First** - No cloud, fully encrypted
-✅ **Proactive Intelligence** - Detects intentions automatically
-✅ **Semantic Search** - Find by meaning, not keywords
+✅ **RAG-Based Personal Memory** — Your own data, not generic AI  
+✅ **Cognitive Memory Decay** — Mimics human forgetting  
+✅ **Privacy-First** — No cloud, fully encrypted  
+🔄 **Proactive Intelligence** — Auto-detects intentions *(in progress)*  
+✅ **Semantic Search** — Find by meaning, not keywords
 
 ---
 
