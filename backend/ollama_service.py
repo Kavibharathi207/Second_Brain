@@ -136,43 +136,96 @@ class OllamaService:
         except Exception as e:
             yield f"Streaming error: {str(e)}"
 
+    def validate_model(self, model: Optional[str] = None) -> bool:
+        """
+        Return True if *model* is present in the local Ollama library.
+        Prints a clear, actionable error message if it is not.
+        """
+        model = model or self.model
+        available = self.list_models()
+        # Ollama tags look like "llama3:latest" — match on base name too
+        base_names = {m.split(":")[0] for m in available}
+        if model in available or model in base_names:
+            return True
+        print(
+            f"[Ollama] Model '{model}' is not available. "
+            f"Run: ollama pull {model}\n"
+            f"Available models: {available or '(none — is Ollama running?)'}"
+        )
+        return False
+
     def embed(self, text: str, model: Optional[str] = None) -> Optional[list]:
         """
-        Generate embeddings for text
-        
-        Args:
-            text: Text to embed
-            model: Embedding model to use
-            
-        Returns:
-            Embedding vector or None if failed
+        Generate an embedding vector for *text* using the Ollama /api/embed
+        endpoint (current API as of Ollama ≥0.2).
+
+        Returns the embedding list on success, or None on any failure.
+        Never returns a zero-vector silently — callers must handle None.
         """
         if model is None:
             model = self.embedding_model
 
-        try:
-            url = f"{self.host}/api/embeddings"
-            
-            payload = {
-                "model": model,
-                "prompt": text,
-            }
-
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=self.timeout
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("embedding")
-            else:
-                print(f"Embedding error: {response.status_code}")
+        # ── Try current endpoint first (/api/embed, Ollama ≥0.2) ─────────────
+        for url, payload in [
+            (
+                f"{self.host}/api/embed",
+                {"model": model, "input": text},
+            ),
+            # Legacy fallback for Ollama <0.2
+            (
+                f"{self.host}/api/embeddings",
+                {"model": model, "prompt": text},
+            ),
+        ]:
+            try:
+                response = requests.post(url, json=payload, timeout=self.timeout)
+            except requests.exceptions.ConnectionError as exc:
+                print(f"[Ollama] Connection error reaching {url}: {exc}")
                 return None
-        except Exception as e:
-            print(f"Embedding failed: {str(e)}")
-            return None
+            except requests.exceptions.Timeout:
+                print(f"[Ollama] Timeout waiting for embedding from {url}")
+                return None
+
+            if response.status_code == 404:
+                # Endpoint not supported by this Ollama version — try next
+                continue
+
+            if response.status_code != 200:
+                print(
+                    f"[Ollama] Embedding request to {url} failed "
+                    f"(HTTP {response.status_code}): {response.text[:200]}"
+                )
+                return None
+
+            try:
+                data = response.json()
+            except ValueError as exc:
+                print(f"[Ollama] Could not parse embedding response JSON: {exc}")
+                return None
+
+            # /api/embed returns {"embeddings": [[...]]}
+            # /api/embeddings returns {"embedding": [...]}
+            vector = data.get("embeddings") or data.get("embedding")
+            if vector is None:
+                print(f"[Ollama] Embedding response missing vector key. Keys: {list(data.keys())}")
+                return None
+
+            # /api/embed wraps in a list-of-lists
+            if isinstance(vector, list) and vector and isinstance(vector[0], list):
+                vector = vector[0]
+
+            if not vector:
+                print("[Ollama] Embedding returned an empty vector.")
+                return None
+
+            return vector
+
+        # Both endpoints failed
+        print(
+            f"[Ollama] Could not obtain embedding for model '{model}'. "
+            "Ensure the model is pulled: ollama pull " + model
+        )
+        return None
 
     def chat(
         self,

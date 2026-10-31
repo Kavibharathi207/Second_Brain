@@ -1,6 +1,17 @@
 """
-Memory storage layer using ChromaDB for vector storage
-Handles persistence and retrieval of memories
+Memory storage layer using ChromaDB for vector storage.
+Every method accepts an optional user_id so memories are
+fully isolated per user.  Passing user_id=None falls back
+to the legacy behaviour (returns ALL memories) so existing
+code that hasn't been updated yet won't break.
+
+Embedding contract
+------------------
+Embeddings are ALWAYS generated from plaintext BEFORE encryption.
+Encrypted ciphertext is stored as the ChromaDB document field so
+no plaintext ever persists in ChromaDB.  Pre-computed embeddings
+are passed explicitly to every add/upsert/query call so
+OllamaEmbeddingFunction is never invoked on ciphertext.
 """
 
 import os
@@ -14,304 +25,308 @@ from .security import security_manager
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
-    """Custom embedding function that uses Ollama for embeddings"""
-    
+    """
+    Registered on the collection so ChromaDB has a callable for any
+    internal path that requires one.  In normal operation this class is
+    NOT invoked for stored documents or queries — callers always supply
+    pre-computed embeddings.  It is only a safety net for ChromaDB
+    internals and must never receive ciphertext.
+    """
+
     def __init__(self):
-        """Initialize with Ollama service"""
         from .ollama_service import OllamaService
         self.ollama = OllamaService()
-        self._fallback_dim = 384  # Default embedding dimension
-    
+
     def __call__(self, texts: Documents) -> Embeddings:
-        """Generate embeddings for the given texts"""
+        if not self.ollama.check_connection():
+            raise RuntimeError(
+                "[Ollama] Cannot generate embeddings: Ollama is not running. "
+                "Start it with: ollama serve"
+            )
         embeddings = []
-        
-        # Check if Ollama is available
-        try:
-            if not self.ollama.check_connection():
-                print("WARNING: Ollama is not running. Using zero embeddings as fallback.")
-                return [[0.0] * self._fallback_dim for _ in texts]
-        except Exception as e:
-            print(f"WARNING: Could not connect to Ollama: {e}. Using fallback embeddings.")
-            return [[0.0] * self._fallback_dim for _ in texts]
-        
         for text in texts:
-            try:
-                # Get embedding from Ollama
-                embedding = self.ollama.embed(text, model=config.OLLAMA_EMBEDDING_MODEL)
-                if embedding:
-                    embeddings.append(embedding)
-                else:
-                    # Fallback: create zero embedding if service fails
-                    embeddings.append([0.0] * self._fallback_dim)
-            except Exception as e:
-                print(f"WARNING: Error generating embedding: {e}. Using fallback.")
-                embeddings.append([0.0] * self._fallback_dim)
-        
+            emb = self.ollama.embed(text, model=config.OLLAMA_EMBEDDING_MODEL)
+            if emb is None:
+                raise RuntimeError(
+                    f"[Ollama] Embedding failed for model '{config.OLLAMA_EMBEDDING_MODEL}'. "
+                    f"Ensure the model is pulled: ollama pull {config.OLLAMA_EMBEDDING_MODEL}"
+                )
+            embeddings.append(emb)
         return embeddings
 
 
+def _embed_plaintext(text: str) -> List[float]:
+    """
+    Generate an embedding from *plaintext* using the configured Ollama
+    embedding model.  Raises RuntimeError if Ollama is unreachable or
+    returns None — callers must not silently swallow this error.
+    """
+    from .ollama_service import ollama_service
+    if not ollama_service.check_connection():
+        raise RuntimeError(
+            "[MemoryStore] Ollama is not running. "
+            "Cannot generate embeddings. Start it with: ollama serve"
+        )
+    vector = ollama_service.embed(text, model=config.OLLAMA_EMBEDDING_MODEL)
+    if vector is None:
+        raise RuntimeError(
+            f"[MemoryStore] Embedding returned None for model "
+            f"'{config.OLLAMA_EMBEDDING_MODEL}'. "
+            f"Ensure the model is pulled: ollama pull {config.OLLAMA_EMBEDDING_MODEL}"
+        )
+    return vector
+
+
 class MemoryStore:
-    """Manages memory storage and retrieval using ChromaDB"""
+    """Manages memory storage and retrieval using ChromaDB."""
 
     def __init__(self):
-        """Initialize ChromaDB connection"""
-        # Create storage directory if it doesn't exist
         os.makedirs(config.CHROMA_DB_PATH, exist_ok=True)
-
-        # Initialize ChromaDB client (new API - v0.4.13+)
-        # Using persistent client instead of deprecated Settings
         self.client = chromadb.PersistentClient(path=config.CHROMA_DB_PATH)
-        
         self.collection = self._get_or_create_collection()
 
     def _get_or_create_collection(self):
-        """Get or create the memories collection"""
-        # Use custom Ollama embedding function to avoid onnxruntime dependency
-        embedding_function = OllamaEmbeddingFunction()
-        
         return self.client.get_or_create_collection(
             name=config.CHROMA_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
-            embedding_function=embedding_function
+            embedding_function=OllamaEmbeddingFunction(),
         )
-        
-        return self.client.get_or_create_collection(
-            name=config.CHROMA_COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-            embedding_function=embedding_function
-        )
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _user_filter(user_id: Optional[str]) -> Optional[Dict]:
+        """Build a ChromaDB where-filter for user_id, or None if not given."""
+        if user_id:
+            return {"user_id": {"$eq": user_id}}
+        return None
+
+    # ── write ─────────────────────────────────────────────────────────────────
+
+    # ── metadata helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _serialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        ChromaDB only accepts str | int | float | bool as metadata values.
+        Serialize any list/dict values to JSON strings so they survive the
+        round-trip without raising a ValueError.
+        """
+        safe: Dict[str, Any] = {}
+        for k, v in metadata.items():
+            if isinstance(v, (list, dict)):
+                safe[k] = json.dumps(v)
+            elif isinstance(v, (str, int, float, bool)) or v is None:
+                safe[k] = v
+            else:
+                safe[k] = str(v)
+        return safe
+
+    @staticmethod
+    def _deserialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Reverse _serialize_metadata: any value that looks like a JSON list or
+        object is decoded back to its Python type.
+        """
+        result: Dict[str, Any] = {}
+        for k, v in metadata.items():
+            if isinstance(v, str) and v.startswith(("[", "{")):
+                try:
+                    result[k] = json.loads(v)
+                except (ValueError, TypeError):
+                    result[k] = v
+            else:
+                result[k] = v
+        return result
 
     def store_memory(
         self,
         content: str,
         metadata: Dict[str, Any],
-        memory_id: Optional[str] = None
+        memory_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> str:
-        """
-        Store a memory in the database
-        
-        Args:
-            content: The memory content
-            metadata: Metadata associated with the memory
-            memory_id: Optional custom ID for the memory
-            
-        Returns:
-            The memory ID
-        """
         if memory_id is None:
             memory_id = f"memory_{datetime.now().timestamp()}"
 
-        # Add timestamp if not present
-        if "created_at" not in metadata:
-            metadata["created_at"] = datetime.now().isoformat()
-        
-        # Add access count
-        if "access_count" not in metadata:
-            metadata["access_count"] = 0
+        metadata.setdefault("created_at", datetime.now().isoformat())
+        metadata.setdefault("access_count", 0)
+        metadata.setdefault("importance", 1.0)
 
-        # Add importance score (default to 1.0)
-        if "importance" not in metadata:
-            metadata["importance"] = 1.0
+        # Always stamp user_id so we can filter later
+        if user_id:
+            metadata["user_id"] = user_id
 
-        # Encrypt content before storage
+        # 1. Generate embedding from PLAINTEXT before any encryption.
+        # 2. Encrypt the content — ciphertext is stored as the document.
+        # 3. Pass the pre-computed embedding explicitly so ChromaDB never
+        #    calls OllamaEmbeddingFunction on the ciphertext.
+        embedding = _embed_plaintext(content)
         encrypted_content = security_manager.encrypt_text(content)
-
-        # Store in ChromaDB
         self.collection.add(
             ids=[memory_id],
+            embeddings=[embedding],
             documents=[encrypted_content],
-            metadatas=[metadata]
+            metadatas=[self._serialize_metadata(metadata)],
         )
-
         return memory_id
-
-    def retrieve_memories(
-        self,
-        query: str,
-        top_k: int = None,
-        filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Retrieve relevant memories based on semantic similarity
-        
-        Args:
-            query: The query string
-            top_k: Number of top results to return
-            filters: Optional metadata filters
-            
-        Returns:
-            List of relevant memories with metadata
-        """
-        if top_k is None:
-            top_k = config.RETRIEVAL_TOP_K
-
-        try:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=top_k,
-                where=filters  # Add filter support
-            )
-
-            # Format results
-            memories = []
-            if results and results["ids"] and len(results["ids"]) > 0:
-                for i, memory_id in enumerate(results["ids"][0]):
-                    encrypted_content = results["documents"][0][i]
-                    # Decrypt content
-                    try:
-                        decrypted_content = security_manager.decrypt_text(encrypted_content)
-                    except Exception:
-                        decrypted_content = encrypted_content  # Fallback if decryption fails
-                    
-                    memory = {
-                        "id": memory_id,
-                        "content": decrypted_content,
-                        "metadata": results["metadatas"][0][i],
-                        "distance": results["distances"][0][i] if results["distances"] else None
-                    }
-                    memories.append(memory)
-
-            return memories
-        except Exception as e:
-            print(f"Error retrieving memories: {str(e)}")
-            return []
 
     def update_memory(
         self,
         memory_id: str,
         content: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """
-        Update an existing memory
-        
-        Args:
-            memory_id: The ID of the memory to update
-            content: New content (optional)
-            metadata: New metadata (optional)
-            
-        Returns:
-            True if successful, False otherwise
-        """
         try:
-            update_data = {}
+            update_data: Dict[str, Any] = {}
             if content:
-                encrypted_content = security_manager.encrypt_text(content)
-                update_data["documents"] = [encrypted_content]
+                # Re-embed from plaintext, then encrypt for storage.
+                update_data["embeddings"] = [_embed_plaintext(content)]
+                update_data["documents"]  = [security_manager.encrypt_text(content)]
             if metadata:
-                update_data["metadatas"] = [metadata]
-
+                update_data["metadatas"] = [self._serialize_metadata(metadata)]
             if update_data:
-                self.collection.update(
-                    ids=[memory_id],
-                    **update_data
-                )
-                return True
-            return False
+                self.collection.update(ids=[memory_id], **update_data)
+            return True
         except Exception as e:
-            print(f"Error updating memory: {str(e)}")
+            print(f"Error updating memory: {e}")
             return False
 
     def delete_memory(self, memory_id: str) -> bool:
-        """
-        Delete a memory
-        
-        Args:
-            memory_id: The ID of the memory to delete
-            
-        Returns:
-            True if successful, False otherwise
-        """
         try:
             self.collection.delete(ids=[memory_id])
             return True
         except Exception as e:
-            print(f"Error deleting memory: {str(e)}")
+            print(f"Error deleting memory: {e}")
             return False
 
+    # ── read ──────────────────────────────────────────────────────────────────
+
     def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get a specific memory by ID
-        
-        Args:
-            memory_id: The memory ID
-            
-        Returns:
-            The memory data or None if not found
-        """
         try:
             result = self.collection.get(ids=[memory_id])
             if result and result["ids"]:
+                raw = result["documents"][0]
+                try:
+                    content = security_manager.decrypt_text(raw)
+                except Exception:
+                    content = raw
                 return {
                     "id": memory_id,
-                    "content": result["documents"][0],
-                    "metadata": result["metadatas"][0]
+                    "content": content,
+                    "metadata": self._deserialize_metadata(result["metadatas"][0]),
                 }
             return None
         except Exception as e:
-            print(f"Error getting memory: {str(e)}")
+            print(f"Error getting memory: {e}")
             return None
 
-    def get_all_memories(self, include_metadata: bool = True) -> List[Dict[str, Any]]:
-        """
-        Get all memories
-        
-        Args:
-            include_metadata: Whether to include metadata
-            
-        Returns:
-            List of all memories
-        """
+    def get_all_memories(
+        self,
+        include_metadata: bool = True,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         try:
-            results = self.collection.get(include=["documents", "metadatas"])
+            kwargs: Dict[str, Any] = {"include": ["documents", "metadatas"]}
+            where = self._user_filter(user_id)
+            if where:
+                kwargs["where"] = where
+
+            results = self.collection.get(**kwargs)
             memories = []
             if results and results["ids"]:
-                for i, memory_id in enumerate(results["ids"]):
-                    encrypted_content = results["documents"][i] if results["documents"] else ""
-                    # Decrypt content
+                for i, mid in enumerate(results["ids"]):
+                    raw = results["documents"][i] if results["documents"] else ""
                     try:
-                        decrypted_content = security_manager.decrypt_text(encrypted_content)
+                        content = security_manager.decrypt_text(raw)
                     except Exception:
-                        decrypted_content = encrypted_content  # Fallback
-                    
-                    memory = {
-                        "id": memory_id,
-                        "content": decrypted_content,
-                        "metadata": results["metadatas"][i] if include_metadata else {}
-                    }
-                    memories.append(memory)
+                        content = raw
+                    raw_meta = results["metadatas"][i] if include_metadata else {}
+                    memories.append({
+                        "id": mid,
+                        "content": content,
+                        "metadata": self._deserialize_metadata(raw_meta),
+                    })
             return memories
         except Exception as e:
-            print(f"Error getting all memories: {str(e)}")
+            print(f"Error getting all memories: {e}")
+            return []
+
+    def retrieve_memories(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if top_k is None:
+            top_k = config.RETRIEVAL_TOP_K
+
+        # Merge user_id filter with any caller-supplied filters
+        where = self._user_filter(user_id)
+        if filters and where:
+            where = {"$and": [where, filters]}
+        elif filters:
+            where = filters
+
+        try:
+            # Embed the query from plaintext explicitly so ChromaDB never
+            # calls OllamaEmbeddingFunction on query text via query_texts=.
+            query_embedding = _embed_plaintext(query)
+
+            query_kwargs: Dict[str, Any] = {
+                "query_embeddings": [query_embedding],
+                "n_results": top_k,
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if where:
+                query_kwargs["where"] = where
+
+            results = self.collection.query(**query_kwargs)
+            memories = []
+            if results and results["ids"] and results["ids"][0]:
+                for i, mid in enumerate(results["ids"][0]):
+                    raw = results["documents"][0][i]
+                    try:
+                        content = security_manager.decrypt_text(raw)
+                    except Exception:
+                        content = raw
+                    memories.append({
+                        "id": mid,
+                        "content": content,
+                        "metadata": self._deserialize_metadata(results["metadatas"][0][i]),
+                        "distance": results["distances"][0][i] if results["distances"] else None,
+                    })
+            return memories
+        except Exception as e:
+            print(f"Error retrieving memories: {e}")
             return []
 
     def update_access_count(self, memory_id: str) -> bool:
-        """Update access count for memory decay calculation"""
         try:
             memory = self.get_memory(memory_id)
             if memory:
-                metadata = memory["metadata"]
-                metadata["access_count"] = metadata.get("access_count", 0) + 1
-                metadata["last_accessed"] = datetime.now().isoformat()
-                self.update_memory(memory_id, metadata=metadata)
+                meta = memory["metadata"]
+                meta["access_count"] = meta.get("access_count", 0) + 1
+                meta["last_accessed"] = datetime.now().isoformat()
+                self.update_memory(memory_id, metadata=meta)
                 return True
             return False
         except Exception as e:
-            print(f"Error updating access count: {str(e)}")
+            print(f"Error updating access count: {e}")
             return False
 
-    def clear_all_memories(self) -> bool:
-        """Clear all memories - use with caution!"""
+    def clear_all_memories(self, user_id: Optional[str] = None) -> bool:
+        """Delete all memories for a specific user (or ALL if user_id is None)."""
         try:
-            all_memories = self.get_all_memories(include_metadata=False)
-            for memory in all_memories:
-                self.delete_memory(memory["id"])
+            memories = self.get_all_memories(include_metadata=False, user_id=user_id)
+            for m in memories:
+                self.delete_memory(m["id"])
             return True
         except Exception as e:
-            print(f"Error clearing memories: {str(e)}")
+            print(f"Error clearing memories: {e}")
             return False
 
 
-# Global memory store instance
+# Global instance
 memory_store = MemoryStore()

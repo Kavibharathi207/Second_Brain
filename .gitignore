@@ -1,120 +1,53 @@
-# ------------------------------
-# Python
-# ------------------------------
+@"
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environment and cache
+venv/
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
+.pytest_cache/
 
-# Build / Packaging
-build/
-dist/
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# ------------------------------
-# Virtual Environment
-# ------------------------------
-venv/
-.venv/
-env/
-ENV/
-env.bak/
-venv.bak/
-
-# ------------------------------
-# Environment Variables
-# ------------------------------
-.env
-.env.local
-.env.*.local
-
-# ------------------------------
-# Database / ChromaDB
-# ------------------------------
+# Local databases and personal data
+data/
 *.db
 *.sqlite
 *.sqlite3
 
-# Chroma vector data
-backend/storage/chromadb/
-
-# ------------------------------
-# Streamlit
-# ------------------------------
-.streamlit/
-.streamlit/*.json
-
-# ------------------------------
-# Logs
-# ------------------------------
-*.log
-logs/
-
-# ------------------------------
-# Testing
-# ------------------------------
-.pytest_cache/
-.coverage
-htmlcov/
-
-# ------------------------------
-# IDE / Editors
-# ------------------------------
+# IDE
 .vscode/
-.idea/
-.project
-.pydevproject
-*.swp
-*.swo
-*.sublime-project
-*.sublime-workspace
 
-# Optional:
-# Keep VSCode settings if shared
-# !.vscode/settings.json
+# Temporary inspection and patch scripts
+_inspect_chroma.py
+_check_cols.py
+crosscheck.py
+fix_gaps.py
+fix_gaps2.py
+inspect_lines.py
+patch_app.py
+patch_check.py
+patch_pin.py
+patch_step4.py
+"@ | Add-Content .gitignore
+Add-Content .gitignore "`n# Local ChromaDB storage`nbackend/storage/"
+# Local application data and vector databases
+data/
+backend/storage/
 
-# ------------------------------
-# Temporary / Backup
-# ------------------------------
-*.tmp
-*.temp
-*.bak
-*.backup
-*.orig
-*.rej
-*~
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
-# ------------------------------
-# Node (if used later)
-# ------------------------------
-node_modules/
-npm-debug.log
-
-# ------------------------------
-# OS Files
-# ------------------------------
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# ------------------------------
-# Profiling
-# ------------------------------
-.profile
-*.prof
+# Temporary inspection and patch scripts
+crosscheck.py
+fix_gaps.py
+fix_gaps2.py
+inspect_lines.py
+patch_app.py
+patch_check.py
+patch_pin.py
+patch_step4.py
